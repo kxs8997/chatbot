@@ -81,7 +81,7 @@ def stop_ollama_server():
         logger.info("Stopping Ollama server...")
         ollama_process.terminate()
         try:
-            ollama_process.wait(timeout=10)
+            ollama_process.wait(timeout=100)
         except subprocess.TimeoutExpired:
             ollama_process.kill()
         ollama_process = None
@@ -190,7 +190,7 @@ def detect_image_type_with_granite(image, debug=False):
         if debug:
             print("Sending image type detection request to Granite vision model...")
             
-        response = requests.post(url, json=payload, timeout=15)  # Shorter timeout for type detection
+        response = requests.post(url, json=payload, timeout=150)  # Shorter timeout for type detection
         
         if response.status_code == 200:
             result = response.json()

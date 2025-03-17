@@ -255,6 +255,7 @@ def get_prompt_for_image_type(image_type):
     
     return prompts.get(image_type, prompts["general"]).strip()
 
+
 def generate_caption_for_image(image, caption_length="normal", debug=False, image_type=None, use_enhanced_captions=True):
     """
     Generate a caption for an image using an advanced vision-language model
@@ -362,8 +363,80 @@ def generate_caption_for_image(image, caption_length="normal", debug=False, imag
         if debug:
             print(f"Caption error: {e}")
         return fallback_caption(image)
-    
 
+
+def recaption_image_for_query(image_path, query):
+    """Generate a caption focused on the query"""
+    try:
+        # Load the image
+        image = Image.open(image_path).convert("RGB")
+        
+        # Make sure model is loaded
+        ensure_model_loaded()
+        
+        # Create a query-focused prompt
+        prompt = f"""
+        Analyze this image specifically to answer this query: "{query}"
+        Focus on providing details that directly address what the user is asking.
+        """
+        
+        # Convert to base64
+        buffered = BytesIO()
+        image.save(buffered, format="JPEG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        
+        # Request from vision model
+        url = f"http://localhost:{ollama_port}/api/generate"
+        payload = {
+            "model": model_name,
+            "prompt": prompt,
+            "images": [img_base64],
+            "stream": False,
+            "options": {
+                "temperature": 0.1,
+                "max_tokens": 300
+            }
+        }
+        
+        response = requests.post(url, json=payload)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("response", "")
+            
+        return f"Error analyzing image: {response.status_code}"
+        
+    except Exception as e:
+        return f"Error processing image: {str(e)}"
+
+def save_extracted_image(image_bytes, document_id, page_num, img_idx):
+    """Save an extracted image to disk"""
+    from config import BASE_DIR
+    import os
+    
+    try:
+        # Create a simple directory structure
+        img_dir = os.path.join(BASE_DIR, "extracted_images", document_id)
+        os.makedirs(img_dir, exist_ok=True)
+        
+        # Create filename and path
+        img_filename = f"page{page_num}_img{img_idx}.jpg"
+        img_path = os.path.join(img_dir, img_filename)
+        
+        print(f"DEBUG: Creating directory: {img_dir}")
+        print(f"DEBUG: Saving image to: {img_path}")
+        
+        # Save the image
+        with open(img_path, "wb") as f:
+            f.write(image_bytes)
+        
+        print(f"DEBUG: Successfully saved image to: {img_path}")
+        return img_path
+    except Exception as save_error:
+        print(f"DEBUG: Error saving image: {str(save_error)}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def extract_images_and_captions(pdf_path, debug=False, use_enhanced_captions=True):
     """
@@ -377,17 +450,25 @@ def extract_images_and_captions(pdf_path, debug=False, use_enhanced_captions=Tru
     Returns:
         Dictionary mapping page numbers to lists of image info dictionaries
     """
+    # Import BASE_DIR at the beginning of the function
+    from config import BASE_DIR, UPLOADS_DIR
+    
+    # Force debug to True temporarily
+    debug = True
+    print(f"\nDEBUG: Starting image extraction for: {pdf_path}")
+    
     # Convert to absolute path if it's not already
     if not os.path.isabs(pdf_path):
         for search_dir in [os.getcwd(), BASE_DIR, UPLOADS_DIR]:
             potential_path = os.path.join(search_dir, pdf_path)
             if os.path.exists(potential_path):
                 pdf_path = potential_path
-                logger.info(f"Resolved path to: {pdf_path}")
+                print(f"DEBUG: Resolved path to: {pdf_path}")
                 break
     
     # Check if the file exists before trying to open it
     if not os.path.exists(pdf_path):
+        print(f"DEBUG: File not found: {pdf_path}")
         logger.error(f"File not found: {pdf_path}")
         return {}
     
@@ -397,6 +478,9 @@ def extract_images_and_captions(pdf_path, debug=False, use_enhanced_captions=Tru
         doc = fitz.open(pdf_path)
         page_captions = {}
         total_images = 0
+        document_id = os.path.basename(pdf_path).replace('.pdf', '')
+        print(f"DEBUG: Extracted document_id: {document_id}")
+       
 
         for page_number in range(len(doc)):
             page = doc[page_number]
@@ -414,13 +498,40 @@ def extract_images_and_captions(pdf_path, debug=False, use_enhanced_captions=Tru
                     image_bytes = base_image.get("image", None)
                     
                     if image_bytes is None:
+                        print(f"DEBUG: No image bytes for image {img_idx} on page {page_number + 1}")
                         continue
                         
                     try:
+                        print(f"DEBUG: Processing image {img_idx + 1} on page {page_number + 1}")
                         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
                         print(f"\n----- Image {img_idx + 1} on page {page_number + 1} -----")
                         print(f"Dimensions: {width}x{height}")
+                        
+                        # Save the image file
+                        try:
+                            img_dir = os.path.join(BASE_DIR, "extracted_images", document_id)
+                            print(f"DEBUG: Creating directory: {img_dir}")
+                            os.makedirs(img_dir, exist_ok=True)
+                            
+                            # Create filename and path
+                            img_filename = f"page{page_number + 1}_img{img_idx + 1}.jpg"
+                            img_path = os.path.join(img_dir, img_filename)
+                            print(f"DEBUG: About to save image to: {img_path}")
+                            
+                            # Save the image
+                            with open(img_path, "wb") as f:
+                                f.write(image_bytes)
+                            
+                            print(f"DEBUG: Successfully saved image to: {img_path}")
+                            
+                        except Exception as save_error:
+                            print(f"DEBUG: Error saving image: {save_error}")
+                            import traceback
+                            traceback.print_exc()
+                            img_path = None
+                        
                     except Exception as e:
+                        print(f"DEBUG: Error processing image: {e}")
                         if debug:
                             logger.error(f"Error opening image from xref {xref}: {e}")
                         continue
@@ -451,7 +562,8 @@ def extract_images_and_captions(pdf_path, debug=False, use_enhanced_captions=Tru
                         "caption": caption_text,
                         "width": width,
                         "height": height,
-                        "type": image_type
+                        "type": image_type,
+                        "file_path": img_path if img_path else ""  # Add the path to the saved image
                     })
                     
                 if image_details:
@@ -461,8 +573,10 @@ def extract_images_and_captions(pdf_path, debug=False, use_enhanced_captions=Tru
         return page_captions
         
     except Exception as e:
+        print(f"DEBUG: Error in extract_images_and_captions: {e}")
+        import traceback
+        traceback.print_exc()
         logger.error(f"Error extracting images from {pdf_path}: {e}")
-        print(f"\n[Image processing ERROR] {str(e)}")
         return {}
 
 # Class for direct use in other modules

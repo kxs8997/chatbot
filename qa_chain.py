@@ -244,6 +244,9 @@ def setup_qa_chain_with_retriever(retriever, output_tokens: int, temperature: fl
     Returns:
         The configured QA chain
     """
+    import re  # Make sure re is imported for the EnhancedQAChain class
+    print("DEBUG: Setting up QA chain with retriever")
+    
     llm = CustomOllama(
         model="deepseek-r1:70b",
         base_url="http://localhost:11434",
@@ -256,14 +259,179 @@ def setup_qa_chain_with_retriever(retriever, output_tokens: int, temperature: fl
         return_messages=True
     )
     
-    logger.info("QA chain setup complete with custom retriever.")
-    return ConversationalRetrievalChain.from_llm(
+    # Create standard QA chain
+    standard_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=retriever,
         memory=memory
     )
+    
+    # Wrap with enhanced chain for image processing
+    print("DEBUG: Creating EnhancedQAChain")
+    enhanced_chain = EnhancedQAChain(standard_chain)
+    
+    print("DEBUG: Enhanced QA chain created")
+    logger.info("QA chain setup complete with custom retriever and image enhancement.")
+    return enhanced_chain
 
 def clear_conversation(qa_chain):
     """Clear conversation history from a QA chain."""
     if qa_chain and qa_chain.memory:
         qa_chain.memory.clear()
+
+class EnhancedQAChain:
+    """Simple wrapper around QA chain to add image recaptioning"""
+    
+    def __init__(self, qa_chain):
+        self.qa_chain = qa_chain
+        self.memory = qa_chain.memory
+        # Get the LLM directly during initialization to avoid attribute errors
+        if hasattr(qa_chain, 'llm'):
+            self.llm = qa_chain.llm
+        else:
+            # Create a new LLM instance that matches what's used in the main code
+            self.llm = CustomOllama(
+                model="deepseek-r1:70b",
+                base_url="http://localhost:11434",
+                temperature=0.6,
+                max_tokens=8192
+            )
+    
+    def invoke(self, input_dict):
+        """Process query and enhance with image analysis if needed"""
+        import re
+        from config import BASE_DIR
+        import os
+        import glob
+        from image_processing import recaption_image_for_query
+        
+        query = input_dict["question"]
+        
+        print(f"DEBUG: EnhancedQAChain received query: {query}")
+        
+        # First use standard QA chain
+        result = self.qa_chain.invoke(input_dict)
+        
+        # Have the LLM determine if visual analysis would be helpful
+        retriever = self.qa_chain.retriever
+        docs = retriever.get_relevant_documents(query)
+        print(f"DEBUG: Retrieved {len(docs)} documents")
+        
+        # Check if any of the retrieved documents contain image content
+        has_image_content = False
+        for i, doc in enumerate(docs):
+            print(f"DEBUG: Document {i+1} metadata: {doc.metadata}")
+            content_snippet = doc.page_content[:100] + "..." if len(doc.page_content) > 100 else doc.page_content
+            print(f"DEBUG: Document {i+1} content snippet: {content_snippet}")
+            
+            if ('type' in doc.metadata and doc.metadata['type'] == 'image') or \
+               ('file_path' in doc.metadata) or \
+               ('[IMAGE CAPTION' in doc.page_content):
+                has_image_content = True
+                print(f"DEBUG: Document {i+1} contains image content")
+                break
+        
+        if not has_image_content:
+            print("DEBUG: No image content found in retrieved documents")
+            return result
+        
+        # Let's use a simpler approach than asking the LLM
+        # If there's image content in the retrieved docs, we'll just assume visual analysis is helpful
+        print("DEBUG: Image content found, proceeding with visual analysis")
+        
+        try:
+            # Look for image paths in metadata or references in text
+            images_to_analyze = []
+            
+            # Check for file_path in metadata
+            for i, doc in enumerate(docs):
+                if 'file_path' in doc.metadata:
+                    images_to_analyze.append(doc.metadata['file_path'])
+                    print(f"DEBUG: Found file_path in metadata: {doc.metadata['file_path']}")
+                
+                # Also check page content for image captions that include file paths
+                for line in doc.page_content.split('\n'):
+                    if 'file_path' in line and '.jpg' in line:
+                        print(f"DEBUG: Found potential file_path in content: {line}")
+                        path_match = re.search(r'file_path: ([^\s,]+\.jpg)', line)
+                        if path_match:
+                            path = path_match.group(1)
+                            print(f"DEBUG: Extracted path: {path}, exists: {os.path.exists(path)}")
+                            if os.path.exists(path):
+                                images_to_analyze.append(path)
+            
+            # If we didn't find paths in doc metadata, try page numbers
+            # Inside the EnhancedQAChain.invoke method:
+            if not images_to_analyze:
+                print("DEBUG: No image paths found in metadata, trying page numbers")
+                for doc in docs:
+                    if 'source' in doc.metadata and 'page' in doc.metadata:
+                        source_path = doc.metadata['source']
+                        page_num = doc.metadata['page']
+                        
+                        # Try different ways of extracting document_id
+                        doc_id = os.path.basename(source_path).replace('.pdf', '')
+                        print(f"DEBUG: Doc ID from filename: {doc_id}")
+                        
+                        # Try extracting from full path
+                        path_parts = source_path.split('/')
+                        for i in range(len(path_parts)):
+                            if i >= 2 and path_parts[i-2] == 'uploads':
+                                potential_id = path_parts[i]
+                                print(f"DEBUG: Potential doc ID from path: {potential_id}")
+                        
+                        # Try multiple patterns with wildcards
+# Add to the patterns list:
+                        patterns = [
+                            # JPG patterns
+                            os.path.join(BASE_DIR, "extracted_images", doc_id, f"page{page_num}_*.jpg"),
+                            # PNG patterns
+                            os.path.join(BASE_DIR, "extracted_images", doc_id, f"page{page_num}_*.png"),
+                            # Other formats
+                            os.path.join(BASE_DIR, "extracted_images", doc_id, f"page{page_num}_*.jpeg"),
+                            os.path.join(BASE_DIR, "extracted_images", doc_id, f"page{page_num}_*.tiff"),
+                            os.path.join(BASE_DIR, "extracted_images", doc_id, f"page{page_num}_*.gif")
+                        ]
+                                                
+                        for pattern in patterns:
+                            print(f"DEBUG: Looking for images with pattern: {pattern}")
+                            matching_images = glob.glob(pattern)
+                            print(f"DEBUG: Found {len(matching_images)} matching images: {matching_images}")
+                            if matching_images:
+                                images_to_analyze.extend(matching_images)
+            
+            print(f"DEBUG: Images to analyze: {images_to_analyze}")
+            
+            # Recaption found images
+            if images_to_analyze:
+                enhanced_captions = []
+                for img_path in images_to_analyze[:2]:  # Limit to 2 images
+                    if os.path.exists(img_path):
+                        print(f"DEBUG: Generating query-specific caption for: {img_path}")
+                        caption = recaption_image_for_query(img_path, query)
+                        print(f"DEBUG: Generated caption: {caption[:100]}...")  # First 100 chars
+                        enhanced_captions.append(caption)
+                    else:
+                        print(f"DEBUG: Image file does not exist: {img_path}")
+                
+                if enhanced_captions:
+                    print(f"DEBUG: Generated {len(enhanced_captions)} enhanced captions")
+                    # Enhance the answer with new captions
+                    enhanced_answer = f"{result['answer']}\n\nAdditional image analysis:\n"
+                    for i, caption in enumerate(enhanced_captions, 1):
+                        enhanced_answer += f"\nImage {i}: {caption}\n"
+                    
+                    result['answer'] = enhanced_answer
+                else:
+                    print("DEBUG: No enhanced captions were generated")
+            else:
+                print("DEBUG: No images found to analyze")
+            
+            return result
+            
+        except Exception as e:
+            # If anything fails, return the original result
+            print(f"DEBUG: Error in image enhancement: {e}")
+            import traceback
+            traceback.print_exc()
+            return result

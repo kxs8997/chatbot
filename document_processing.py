@@ -323,9 +323,11 @@ def parse_pdf_with_images(pdf_path: str, debug: bool = False, process_tables_sep
                 width = img_info.get("width", "unknown")
                 height = img_info.get("height", "unknown")
                 img_type = img_info.get("type", "unknown")
+                file_path = img_info.get("file_path", "")
+                
                 verbose_caption = (
                     f"\n\n[IMAGE CAPTION - Page {page_number + 1}, Image {idx + 1} "
-                    f"(Type: {img_type}, Dimensions: {width}x{height})]\n{caption}"
+                    f"(Type: {img_type}, Dimensions: {width}x{height}, file_path: {file_path})]\n{caption}"
                 )
                 page_text += verbose_caption
         

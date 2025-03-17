@@ -14,14 +14,13 @@ nltk.download('punkt_tab')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from config import UPLOADS_DIR, DATASOURCES, DEFAULT_CHUNK_SIZE, DEFAULT_OUTPUT_TOKENS, VECTOR_CACHE_DIR, DEFAULT_TEMPERATURE, IMAGE_STORAGE_DIR
+from config import UPLOADS_DIR, DATASOURCES, DEFAULT_CHUNK_SIZE, DEFAULT_OUTPUT_TOKENS, VECTOR_CACHE_DIR, DEFAULT_TEMPERATURE, BASE_DIR
 from auth import setup_authentication
 from ftp_utils import test_ftp_connection, upload_to_ftp
 from document_processing import parse_files, get_supported_extensions, parse_mediawiki_dump, pages_to_documents
 from document_processing import extract_tables_from_pdf, enhanced_document_chunking
 from vector_store import build_vector_store, load_cached_vectorstore, save_vectorstore
-from vector_store import create_multimodal_vectorstore
-from qa_chain import setup_qa_chain, clear_conversation, CustomOllama, RerankingRetriever
+from qa_chain import clear_conversation, CustomOllama, RerankingRetriever
 from qa_chain import create_balanced_retriever, setup_qa_chain_with_retriever
 from utils import format_answer, extract_thoughts
 from image_processing import extract_images_and_captions
@@ -358,7 +357,7 @@ def main():
     st.title("Mabl-GPT")
     st.warning("Mabl-GPT is highly experimental. Please verify all output before relying on it.")
     os.makedirs(UPLOADS_DIR, exist_ok=True)
-    os.makedirs(IMAGE_STORAGE_DIR, exist_ok=True)
+    os.makedirs(os.path.join(BASE_DIR, "extracted_images"), exist_ok=True)
 
     # ───── Sidebar Controls ─────
     with st.sidebar:
