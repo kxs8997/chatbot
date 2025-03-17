@@ -1,0 +1,8 @@
+chatbot/
+vector_cache/
+my_ftp_files/
+__pycache__/
+*.pyc
+.vscode/
+ftp_root/
+
